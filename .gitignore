@@ -12,3 +12,6 @@ wheels/
 
 # test results
 test_results
+
+function.zip
+__pycache__
