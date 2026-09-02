@@ -21,3 +21,4 @@ dashboard/.streamlit/secrets.toml
 
 
 sql
+sql/*
