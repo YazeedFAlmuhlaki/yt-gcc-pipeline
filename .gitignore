@@ -19,6 +19,3 @@ __pycache__
 
 dashboard/.streamlit/secrets.toml
 
-
-sql
-sql/*
