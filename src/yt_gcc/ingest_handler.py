@@ -33,12 +33,16 @@ def lambda_handler(event, context):
             status_code = ingest_yt_data(region_data_enriched, bkt_name, region_key)
 
             print(f"Region = {region}, Ingestion Status Code = {status_code}")
-            succeeded.append(region)
+            succeeded.append(region_key)
 
         except Exception as e:
             print(f"An Error Occurred With Region = {region}")
             print("ERROR:", e)
             failed.append(region)
+
+    if len(failed) == 0: 
+        # to trigger another lambda that join videos with categories
+        ingest_yt_data([{"date": today, "regions": succeeded}], bkt_name, f"raw/_control/youtube/most_popular/ingest_date={today}/_SUCCESS")
 
     if len(failed) == len(REGIONS_LIST):
         raise RuntimeError(f"all {len(REGIONS_LIST)} regions failed")

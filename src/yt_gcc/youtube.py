@@ -1,5 +1,6 @@
 import httpx
-from .config import API_URL
+from .config import API_URL,CATEGORIES_URL
+import json
 
 def fetch_yt_data(region:str, YT_API_KEY:str) -> list[dict]: 
     """call the youtube api to return the most popular videos in the given region"""
@@ -30,6 +31,44 @@ def fetch_yt_data(region:str, YT_API_KEY:str) -> list[dict]:
         query_params["pageToken"] = next_token
 
     return all_results
+
+
+
+def fetch_categories(region:str, YT_API_KEY:str):
+     query_params = {
+    
+            "part"         : "snippet",
+            "regionCode"   : region, 
+            "maxResults"   : 50, 
+            "key"          : YT_API_KEY, 
+            
+        }
+
+     response = httpx.get(CATEGORIES_URL, params=query_params)
+
+     data = response.json()
+
+     return data["items"]
+
+def merge_categories (regions:list, YT_API_KEY): 
+    categories = {}
+
+    for region in regions: 
+        
+        try:
+            region_items = fetch_categories(region, YT_API_KEY) 
+            
+
+            for item in region_items: 
+                id         = item["id"]
+                title      = item["snippet"]["title"]
+                assignable = item["snippet"]["assignable"]
+
+                categories [id] = {"id" : id, "title" : title, "assignable" : assignable}
+        except Exception: 
+            print("region=", region, " had an error!")
+
+    return categories
 
 
 def enrich_yt_data(data:list[dict], pulled_at:str) -> list[dict]: 
