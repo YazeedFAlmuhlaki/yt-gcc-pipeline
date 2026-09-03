@@ -4,7 +4,11 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-st.set_page_config(page_title="GCC YouTube Trends", layout="wide")
+st.set_page_config(
+    page_title="GCC YouTube Trends",
+    page_icon="📈",
+    layout="wide",
+)
 
 DATABASE = st.secrets["athena_database"]
 OUTPUT = st.secrets["athena_output"]
@@ -18,6 +22,13 @@ REGION_NAMES = {
     "OM": "Oman",
 }
 
+PALETTE = [
+    "#4C78A8", "#F58518", "#54A24B", "#E45756", "#72B7B2",
+    "#B279A2", "#FF9DA6", "#9D755D", "#EECA3B", "#BAB0AC",
+]
+
+PLOT_CONFIG = {"displayModeBar": False, "responsive": True}
+
 
 @st.cache_resource
 def get_session():
@@ -28,7 +39,7 @@ def get_session():
     )
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=1800, show_spinner=False)
 def run_query(sql: str) -> pd.DataFrame:
     return wr.athena.read_sql_query(
         sql=sql,
@@ -39,7 +50,7 @@ def run_query(sql: str) -> pd.DataFrame:
     )
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, show_spinner=False)
 def available_dates() -> list:
     df = run_query(
         "SELECT DISTINCT ingest_date FROM most_popular ORDER BY ingest_date DESC"
@@ -48,34 +59,76 @@ def available_dates() -> list:
 
 
 def fmt(n) -> str:
-    if pd.isna(n):
+    if n is None or pd.isna(n):
         return "-"
     return f"{int(n):,}"
 
 
-st.title("GCC YouTube Trends")
-st.caption("Daily most popular videos across six Gulf regions")
+def fmt_compact(n) -> str:
+    if n is None or pd.isna(n):
+        return "-"
+    n = float(n)
+    for cut, suffix in ((1e9, "B"), (1e6, "M"), (1e3, "K")):
+        if abs(n) >= cut:
+            return f"{n / cut:.2f}{suffix}"
+    return f"{int(n):,}"
 
-if st.sidebar.button("Refresh data", use_container_width=True):
-    st.cache_data.clear()
-    st.rerun()
+
+def delta(current, previous):
+    if current is None or previous is None or pd.isna(current) or pd.isna(previous):
+        return None
+    diff = int(current) - int(previous)
+    if diff == 0:
+        return None
+    return f"{diff:+,}"
+
+
+def style(fig, height=420, legend_bottom=False):
+    fig.update_layout(
+        height=height,
+        margin=dict(l=10, r=10, t=10, b=10),
+        legend_title_text="",
+        hoverlabel=dict(font_size=12),
+        colorway=PALETTE,
+    )
+    if legend_bottom:
+        fig.update_layout(
+            legend=dict(orientation="h", yanchor="bottom", y=-0.28, x=0)
+        )
+    fig.update_xaxes(showgrid=False)
+    fig.update_yaxes(gridcolor="rgba(128,128,128,0.18)")
+    return fig
+
 
 dates = available_dates()
 
 if not dates:
+    st.title("GCC YouTube Trends")
     st.warning("No data yet. The pipeline has not produced any partitions.")
     st.stop()
 
-selected_date = st.sidebar.selectbox("Ingest date", dates)
-st.sidebar.caption(f"{len(dates)} day(s) available")
+head_left, head_right = st.columns([3, 1])
 
-all_regions = list(REGION_NAMES.keys())
-picked_regions = st.sidebar.multiselect(
-    "Regions",
-    options=all_regions,
-    default=all_regions,
-    format_func=lambda r: f"{r} ({REGION_NAMES[r]})",
+with head_right:
+    selected_date = st.selectbox("Ingest date", dates, label_visibility="collapsed")
+
+with head_left:
+    st.title(f"GCC YouTube Trends · {selected_date}")
+
+st.caption(
+    f"Most popular videos in six Gulf regions. "
+    f"{len(dates)} day(s) collected so far."
 )
+
+with st.expander("Filter regions"):
+    all_regions = list(REGION_NAMES.keys())
+    picked_regions = st.multiselect(
+        "Included in every view below",
+        options=all_regions,
+        default=all_regions,
+        format_func=lambda r: f"{r} · {REGION_NAMES[r]}",
+        label_visibility="collapsed",
+    )
 
 if not picked_regions:
     st.warning("Select at least one region.")
@@ -84,40 +137,62 @@ if not picked_regions:
 region_list = ", ".join(f"'{r}'" for r in picked_regions)
 scope = f"ingest_date = '{selected_date}' AND region_code IN ({region_list})"
 
-overview = run_query(f"""
-    SELECT
-      COUNT(*)                           AS row_count,
-      COUNT(DISTINCT video_id)           AS unique_videos,
-      COUNT(DISTINCT channel_title)      AS channels,
-      SUM(view_count)                    AS total_views,
-      APPROX_PERCENTILE(view_count, 0.5) AS median_views
-    FROM most_popular
-    WHERE {scope}
-""")
+if len(picked_regions) < len(REGION_NAMES):
+    st.info(f"Showing {len(picked_regions)} of 6 regions: {' '.join(picked_regions)}")
 
-spread = run_query(f"""
-    WITH per_video AS (
-      SELECT video_id, COUNT(DISTINCT region_code) AS regions
-      FROM most_popular
-      WHERE {scope}
-      GROUP BY video_id
-    )
-    SELECT
-      COUNT(*)                                     AS videos,
-      SUM(CASE WHEN regions > 1 THEN 1 ELSE 0 END) AS shared_videos
-    FROM per_video
-""")
 
-shared_pct = 0.0
-if spread["videos"][0]:
-    shared_pct = 100.0 * spread["shared_videos"][0] / spread["videos"][0]
+def overview_for(date_value: str) -> pd.DataFrame:
+    return run_query(f"""
+        SELECT
+          COUNT(*)                           AS row_count,
+          COUNT(DISTINCT video_id)           AS unique_videos,
+          COUNT(DISTINCT channel_title)      AS channels,
+          SUM(view_count)                    AS total_views,
+          APPROX_PERCENTILE(view_count, 0.5) AS median_views
+        FROM most_popular
+        WHERE ingest_date = '{date_value}' AND region_code IN ({region_list})
+    """)
+
+
+current = overview_for(selected_date)
+
+position = dates.index(selected_date)
+previous_date = dates[position + 1] if position + 1 < len(dates) else None
+previous = overview_for(previous_date) if previous_date else None
+
+
+def prev_value(column):
+    if previous is None or previous.empty:
+        return None
+    return previous[column][0]
+
 
 c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("Chart rows", fmt(overview["row_count"][0]))
-c2.metric("Unique videos", fmt(overview["unique_videos"][0]))
-c3.metric("Channels", fmt(overview["channels"][0]))
-c4.metric("Median views", fmt(overview["median_views"][0]))
-c5.metric("In multiple charts", f"{shared_pct:.0f}%")
+
+c1.metric(
+    "Chart rows",
+    fmt(current["row_count"][0]),
+    delta(current["row_count"][0], prev_value("row_count")),
+)
+c2.metric(
+    "Unique videos",
+    fmt(current["unique_videos"][0]),
+    delta(current["unique_videos"][0], prev_value("unique_videos")),
+)
+c3.metric(
+    "Channels",
+    fmt(current["channels"][0]),
+    delta(current["channels"][0], prev_value("channels")),
+)
+c4.metric(
+    "Median views",
+    fmt_compact(current["median_views"][0]),
+    delta(current["median_views"][0], prev_value("median_views")),
+)
+c5.metric("Total views", fmt_compact(current["total_views"][0]))
+
+if previous_date:
+    st.caption(f"Change shown against {previous_date}.")
 
 st.divider()
 
@@ -131,7 +206,7 @@ with tab_regions:
 
     with left:
         st.subheader("Categories by region")
-        st.caption("Shown as percentages because chart length varies by country.")
+        st.caption("Percentages, since chart length differs by country.")
         categories = run_query(f"""
             SELECT
               region_code,
@@ -147,14 +222,18 @@ with tab_regions:
             x="region_code",
             y="pct",
             color="category_name",
-            labels={"pct": "% of region", "region_code": "", "category_name": "Category"},
+            custom_data=["category_name", "videos"],
+            labels={"pct": "% of region", "region_code": ""},
         )
-        fig.update_layout(height=430, legend_title_text="")
-        st.plotly_chart(fig, use_container_width=True)
+        fig.update_traces(
+            hovertemplate="%{customdata[0]}<br>%{y}%% · %{customdata[1]} videos<extra></extra>"
+        )
+        st.plotly_chart(style(fig, 440, legend_bottom=True), use_container_width=True,
+                        config=PLOT_CONFIG)
 
     with right:
         st.subheader("Chart size")
-        st.caption("How many videos each country returned, and the views behind them.")
+        st.caption("Videos returned per country.")
         sizes = run_query(f"""
             SELECT
               region_code,
@@ -171,18 +250,24 @@ with tab_regions:
             sizes,
             x="region_code",
             y="videos",
-            hover_data=["country", "total_views", "median_views"],
+            text="videos",
+            custom_data=["country", "total_views", "median_views"],
             labels={"videos": "Videos", "region_code": ""},
         )
-        fig.update_layout(height=430)
-        st.plotly_chart(fig, use_container_width=True)
+        fig.update_traces(
+            marker_color=PALETTE[0],
+            textposition="outside",
+            hovertemplate="%{customdata[0]}<br>%{y} videos<br>"
+                          "%{customdata[1]:,} total views<extra></extra>",
+        )
+        st.plotly_chart(style(fig, 440), use_container_width=True, config=PLOT_CONFIG)
 
     st.divider()
     left2, right2 = st.columns(2)
 
     with left2:
         st.subheader("Shared videos between countries")
-        st.caption("Count of videos appearing in both charts on this date.")
+        st.caption("Videos appearing in both charts.")
         overlap = run_query(f"""
             SELECT
               a.region_code AS region_a,
@@ -209,12 +294,13 @@ with tab_regions:
             aspect="auto",
             labels={"x": "", "y": "", "color": "Shared"},
         )
-        fig.update_layout(height=420, coloraxis_showscale=False)
-        st.plotly_chart(fig, use_container_width=True)
+        fig.update_layout(coloraxis_showscale=False)
+        fig.update_traces(hovertemplate="%{y} and %{x}<br>%{z} shared<extra></extra>")
+        st.plotly_chart(style(fig, 420), use_container_width=True, config=PLOT_CONFIG)
 
     with right2:
         st.subheader("Exclusive vs shared")
-        st.caption("Videos found in one chart only, against those found in several.")
+        st.caption("Videos found in one chart only, against several.")
         local = run_query(f"""
             WITH per_video AS (
               SELECT video_id, COUNT(DISTINCT region_code) AS regions
@@ -245,10 +331,10 @@ with tab_regions:
             y="videos",
             color="kind",
             barmode="stack",
-            labels={"videos": "Videos", "region_code": "", "kind": ""},
+            labels={"videos": "Videos", "region_code": ""},
         )
-        fig.update_layout(height=420, legend_title_text="")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(style(fig, 420, legend_bottom=True), use_container_width=True,
+                        config=PLOT_CONFIG)
 
 
 with tab_content:
@@ -256,7 +342,7 @@ with tab_content:
 
     with left:
         st.subheader("Hours to trend")
-        st.caption("Time between publishing and appearing in the chart.")
+        st.caption("Time between publishing and reaching the chart.")
         speed = run_query(f"""
             SELECT
               category_name,
@@ -279,16 +365,20 @@ with tab_content:
             x="avg_hours",
             y="category_name",
             orientation="h",
-            hover_data=["videos", "median_hours"],
+            custom_data=["videos", "median_hours"],
             labels={"avg_hours": "Average hours", "category_name": ""},
         )
-        fig.update_layout(height=460)
+        fig.update_traces(
+            marker_color=PALETTE[1],
+            hovertemplate="%{y}<br>mean %{x} h · median %{customdata[1]} h<br>"
+                          "%{customdata[0]} videos<extra></extra>",
+        )
         fig.update_yaxes(tickmode="linear")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(style(fig, 460), use_container_width=True, config=PLOT_CONFIG)
 
     with right:
         st.subheader("Publishing hour")
-        st.caption("Riyadh time, for the six largest categories.")
+        st.caption("Riyadh time, six largest categories.")
         hours = run_query(f"""
             WITH top_categories AS (
               SELECT category_name
@@ -319,17 +409,19 @@ with tab_content:
             grid,
             color_continuous_scale="Oranges",
             aspect="auto",
-            labels={"x": "Hour (Riyadh)", "y": "", "color": "Videos"},
+            labels={"x": "Hour", "y": "", "color": "Videos"},
         )
-        fig.update_layout(height=460, coloraxis_showscale=False)
-        st.plotly_chart(fig, use_container_width=True)
+        fig.update_layout(coloraxis_showscale=False)
+        fig.update_xaxes(dtick=3)
+        fig.update_traces(hovertemplate="%{y}<br>%{x}:00 · %{z} videos<extra></extra>")
+        st.plotly_chart(style(fig, 460), use_container_width=True, config=PLOT_CONFIG)
 
     st.divider()
     left2, right2 = st.columns(2)
 
     with left2:
         st.subheader("Top tags")
-        st.caption("Lowercased so the same tag is not counted twice.")
+        st.caption("Lowercased so one tag is not counted twice.")
         tags = run_query(f"""
             SELECT LOWER(tag) AS tag, COUNT(*) AS uses
             FROM most_popular
@@ -346,9 +438,9 @@ with tab_content:
             orientation="h",
             labels={"uses": "Occurrences", "tag": ""},
         )
-        fig.update_layout(height=560)
+        fig.update_traces(marker_color=PALETTE[2])
         fig.update_yaxes(tickmode="linear")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(style(fig, 560), use_container_width=True, config=PLOT_CONFIG)
 
     with right2:
         st.subheader("Likes per view")
@@ -374,30 +466,32 @@ with tab_content:
             x="view_count",
             y="like_rate",
             color="category_name",
+            size="like_count",
+            size_max=22,
             hover_name="video_title",
-            hover_data=["channel_title", "region_code"],
+            custom_data=["channel_title", "region_code"],
             log_x=True,
-            labels={
-                "view_count": "Views (log)",
-                "like_rate": "Like rate %",
-                "category_name": "",
-            },
+            labels={"view_count": "Views", "like_rate": "Like rate %"},
         )
-        fig.update_layout(height=560, legend_title_text="")
-        st.plotly_chart(fig, use_container_width=True)
+        fig.update_traces(
+            hovertemplate="<b>%{hovertext}</b><br>%{customdata[0]} · %{customdata[1]}"
+                          "<br>%{x:,} views · %{y}%<extra></extra>"
+        )
+        st.plotly_chart(style(fig, 560, legend_bottom=True), use_container_width=True,
+                        config=PLOT_CONFIG)
 
 
 with tab_videos:
     st.subheader("Videos in more than one chart")
     cross = run_query(f"""
         SELECT
-          MAX(video_title)            AS title,
-          MAX(channel_title)          AS channel,
-          MAX(category_name)          AS category,
-          COUNT(DISTINCT region_code) AS regions,
-          ARRAY_JOIN(ARRAY_AGG(DISTINCT region_code ORDER BY region_code), ' ') AS in_charts,
-          MIN(regional_rank)          AS best_rank,
-          MAX(view_count)             AS views
+          COUNT(DISTINCT region_code)       AS regions,
+          ARRAY_JOIN(ARRAY_AGG(DISTINCT region_code ORDER BY region_code), ' ') AS charts,
+          MIN(regional_rank)                AS best_rank,
+          MAX(view_count)                   AS views,
+          MAX(channel_title)                AS channel,
+          MAX(category_name)                AS category,
+          MAX(video_title)                  AS title
         FROM most_popular
         WHERE {scope}
         GROUP BY video_id
@@ -405,7 +499,21 @@ with tab_videos:
         ORDER BY regions DESC, views DESC
         LIMIT 40
     """)
-    st.dataframe(cross, use_container_width=True, height=420, hide_index=True)
+    st.dataframe(
+        cross,
+        use_container_width=True,
+        height=420,
+        hide_index=True,
+        column_config={
+            "regions": st.column_config.NumberColumn("Regions", width="small"),
+            "charts": st.column_config.TextColumn("In charts", width="small"),
+            "best_rank": st.column_config.NumberColumn("Best rank", width="small"),
+            "views": st.column_config.NumberColumn("Views"),
+            "channel": st.column_config.TextColumn("Channel"),
+            "category": st.column_config.TextColumn("Category"),
+            "title": st.column_config.TextColumn("Title", width="large"),
+        },
+    )
 
     st.divider()
     left, right = st.columns(2)
@@ -416,17 +524,27 @@ with tab_videos:
             SELECT
               region_code,
               regional_rank,
-              video_title,
-              channel_title,
-              category_name,
               view_count,
-              like_count
+              channel_title,
+              video_title
             FROM most_popular
             WHERE {scope}
               AND regional_rank <= 5
             ORDER BY region_code, regional_rank
         """)
-        st.dataframe(top, use_container_width=True, height=460, hide_index=True)
+        st.dataframe(
+            top,
+            use_container_width=True,
+            height=460,
+            hide_index=True,
+            column_config={
+                "region_code": st.column_config.TextColumn("Region", width="small"),
+                "regional_rank": st.column_config.NumberColumn("Rank", width="small"),
+                "view_count": st.column_config.NumberColumn("Views"),
+                "channel_title": st.column_config.TextColumn("Channel"),
+                "video_title": st.column_config.TextColumn("Title", width="large"),
+            },
+        )
 
     with right:
         st.subheader("Top channels")
@@ -435,7 +553,6 @@ with tab_videos:
               channel_title,
               COUNT(*)                    AS appearances,
               COUNT(DISTINCT region_code) AS regions,
-              COUNT(DISTINCT video_id)    AS videos,
               SUM(view_count)             AS total_views
             FROM most_popular
             WHERE {scope}
@@ -443,7 +560,18 @@ with tab_videos:
             ORDER BY appearances DESC, total_views DESC
             LIMIT 20
         """)
-        st.dataframe(channels, use_container_width=True, height=460, hide_index=True)
+        st.dataframe(
+            channels,
+            use_container_width=True,
+            height=460,
+            hide_index=True,
+            column_config={
+                "channel_title": st.column_config.TextColumn("Channel", width="medium"),
+                "appearances": st.column_config.NumberColumn("Spots", width="small"),
+                "regions": st.column_config.NumberColumn("Regions", width="small"),
+                "total_views": st.column_config.NumberColumn("Views"),
+            },
+        )
 
     concentration = run_query(f"""
         WITH ranked AS (
@@ -462,7 +590,7 @@ with tab_videos:
     """)
     if concentration["all_rows"][0]:
         share = 100.0 * concentration["top10_rows"][0] / concentration["all_rows"][0]
-        st.info(f"The ten largest channels hold {share:.1f}% of all chart positions.")
+        st.caption(f"The ten largest channels hold {share:.1f}% of all chart positions.")
 
 
 with tab_history:
@@ -492,8 +620,8 @@ with tab_history:
                 markers=True,
                 labels={"unique_videos": "Unique videos", "ingest_date": ""},
             )
-            fig.update_layout(height=380)
-            st.plotly_chart(fig, use_container_width=True)
+            fig.update_traces(line_color=PALETTE[0], line_width=2.5)
+            st.plotly_chart(style(fig, 380), use_container_width=True, config=PLOT_CONFIG)
 
         with right:
             fig = px.line(
@@ -503,8 +631,24 @@ with tab_history:
                 markers=True,
                 labels={"total_views": "Total views", "ingest_date": ""},
             )
-            fig.update_layout(height=380)
-            st.plotly_chart(fig, use_container_width=True)
+            fig.update_traces(line_color=PALETTE[1], line_width=2.5)
+            st.plotly_chart(style(fig, 380), use_container_width=True, config=PLOT_CONFIG)
 
-        st.dataframe(history, use_container_width=True, hide_index=True)
+        st.dataframe(
+            history,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "ingest_date": st.column_config.TextColumn("Date"),
+                "row_count": st.column_config.NumberColumn("Chart rows"),
+                "unique_videos": st.column_config.NumberColumn("Unique videos"),
+                "total_views": st.column_config.NumberColumn("Total views"),
+            },
+        )
         st.caption("This is the only view that reads every partition.")
+
+st.divider()
+st.caption(
+    "Collected daily at 21:00 Asia/Riyadh from the YouTube Data API, "
+    "processed on AWS Lambda and queried with Athena."
+)
