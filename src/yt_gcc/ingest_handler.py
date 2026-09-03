@@ -44,8 +44,8 @@ def lambda_handler(event, context):
         # to trigger another lambda that join videos with categories
         ingest_yt_data([{"date": today, "regions": succeeded}], bkt_name, f"raw/_control/youtube/most_popular/ingest_date={today}/_SUCCESS")
 
-    if len(failed) == len(REGIONS_LIST):
-        raise RuntimeError(f"all {len(REGIONS_LIST)} regions failed")
+    else: 
+        raise RuntimeError(f"{len(failed)} of {len(REGIONS_LIST)} regions failed: {failed}")
 
     return {
         "ingest_date": today,
