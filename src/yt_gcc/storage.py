@@ -3,6 +3,7 @@ import json
 
 
 s3 = boto3.client('s3')
+dynamodb = boto3.client("dynamodb")
 
 
 def build_yt_data_key(region:str, ingest_date:str, stamp:str) -> str: 
@@ -32,3 +33,16 @@ def ingest_yt_data(items, bucket:str, key:str):
 
 def read_s3_object(bucket, key):
     return s3.get_object(Bucket=bucket, Key=key)["Body"].read().decode("utf-8")
+
+
+def claim_run(table: str, ingest_date: str) -> bool:
+    """try to reserve this ingest_date; False means another invocation already has it"""
+    try:
+        dynamodb.put_item(
+            TableName=table,
+            Item={"ingest_date": {"S": ingest_date}},
+            ConditionExpression="attribute_not_exists(ingest_date)",
+        )
+        return True
+    except dynamodb.exceptions.ConditionalCheckFailedException:
+        return False

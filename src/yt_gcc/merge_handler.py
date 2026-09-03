@@ -1,8 +1,8 @@
 from urllib.parse import unquote_plus
 import json
 
-from yt_gcc.storage import read_s3_object, build_processed_key, ingest_yt_data
-from yt_gcc.config import CATEGORIES_S3_KEY
+from yt_gcc.storage import read_s3_object, build_processed_key, ingest_yt_data, claim_run
+from yt_gcc.config import CATEGORIES_S3_KEY, RUNS_TABLE
 
 
 def to_int(value):
@@ -19,7 +19,16 @@ def lambda_handler(event, context):
     success_str = read_s3_object(bucket=bucket, key=key)
     success_data = json.loads(success_str)
 
+
     ingest_date = success_data["date"]
+
+
+    if not claim_run(RUNS_TABLE, ingest_date):
+        print(f"{ingest_date} already processed, skipping")
+        return {"ingest_date": ingest_date, "skipped": True}
+
+
+
     regions_list = success_data["regions"]
 
     categories_str = read_s3_object(bucket, CATEGORIES_S3_KEY)
