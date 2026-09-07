@@ -145,6 +145,7 @@ if not picked_regions:
 
 region_list = ", ".join(f"'{r}'" for r in picked_regions)
 scope = f"ingest_date = '{selected_date}' AND region_code IN ({region_list})"
+all_days = f"region_code IN ({region_list})"
 order = [r for r in REGION_ORDER if r in picked_regions]
 
 st.caption(
@@ -625,56 +626,282 @@ with tab_videos:
 
 
 with tab_history:
-    st.subheader("Daily history")
+    st.info(
+        f"Everything below covers all {len(dates)} collected days, "
+        "not the date selected above."
+    )
+
+    st.subheader("Daily totals")
+    history = run_query(f"""
+        SELECT
+          ingest_date,
+          COUNT(*)                 AS row_count,
+          COUNT(DISTINCT video_id) AS unique_videos,
+          SUM(view_count)          AS total_views
+        FROM most_popular
+        WHERE {all_days}
+        GROUP BY ingest_date
+        ORDER BY ingest_date
+    """)
+
+    fig = px.line(
+        history,
+        x="ingest_date",
+        y="unique_videos",
+        markers=True,
+        labels={"unique_videos": "Unique videos", "ingest_date": ""},
+    )
+    fig.update_traces(line_color=PALETTE[0], line_width=2.5, marker_size=8)
+    fig.update_xaxes(type="category")
+    st.plotly_chart(style(fig, 300), use_container_width=True, config=PLOT_CONFIG)
+
+    st.dataframe(
+        history,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "ingest_date": st.column_config.TextColumn("Date", width="small"),
+            "row_count": st.column_config.NumberColumn("Rows", width="small"),
+            "unique_videos": st.column_config.NumberColumn("Videos", width="small"),
+            "total_views": st.column_config.NumberColumn("Views"),
+        },
+    )
+
+    st.divider()
+
+    st.subheader("Gaming share by country")
+    st.caption("Share of every chart position held by gaming, across all days.")
+    gaming = run_query(f"""
+        SELECT
+          region_code,
+          COUNT(*) AS rows_total,
+          ROUND(100.0 * SUM(CASE WHEN category_name = 'Gaming' THEN 1 ELSE 0 END)
+                / COUNT(*), 1) AS gaming_pct
+        FROM most_popular
+        WHERE {all_days}
+        GROUP BY region_code
+        ORDER BY gaming_pct DESC
+    """)
+    gaming["country"] = gaming["region_code"].map(REGION_NAMES)
+    fig = px.bar(
+        gaming,
+        x="gaming_pct",
+        y="region_code",
+        orientation="h",
+        text="gaming_pct",
+        custom_data=["country", "rows_total"],
+        labels={"gaming_pct": "% of chart positions", "region_code": ""},
+    )
+    fig.update_traces(
+        marker_color=PALETTE[0],
+        textposition="outside",
+        cliponaxis=False,
+        hovertemplate="%{customdata[0]}<br>%{x}% gaming<br>"
+                      "out of %{customdata[1]:,} rows<extra></extra>",
+    )
+    fig.update_yaxes(tickmode="linear", autorange="reversed")
+    st.plotly_chart(style(fig, 340), use_container_width=True, config=PLOT_CONFIG)
+
+    st.subheader("Hours to trend, all days")
+    st.caption("Larger sample than the single-day view under Content.")
+    speed_all = run_query(f"""
+        SELECT
+          category_name,
+          COUNT(*) AS videos,
+          ROUND(AVG(DATE_DIFF('hour',
+            from_iso8601_timestamp(published_at),
+            from_iso8601_timestamp(pulled_at))), 0) AS avg_hours,
+          ROUND(APPROX_PERCENTILE(
+            CAST(DATE_DIFF('hour',
+              from_iso8601_timestamp(published_at),
+              from_iso8601_timestamp(pulled_at)) AS DOUBLE), 0.5), 0) AS median_hours
+        FROM most_popular
+        WHERE {all_days}
+        GROUP BY category_name
+        HAVING COUNT(*) >= 30
+        ORDER BY avg_hours
+    """)
+    fig = px.bar(
+        speed_all,
+        x="avg_hours",
+        y="category_name",
+        orientation="h",
+        text="avg_hours",
+        custom_data=["videos", "median_hours"],
+        labels={"avg_hours": "Average hours", "category_name": ""},
+    )
+    fig.update_traces(
+        marker_color=PALETTE[1],
+        textposition="outside",
+        cliponaxis=False,
+        hovertemplate="%{y}<br>mean %{x} h · median %{customdata[1]} h<br>"
+                      "%{customdata[0]} rows<extra></extra>",
+    )
+    fig.update_yaxes(tickmode="linear")
+    st.plotly_chart(style(fig, max(320, 46 * max(len(speed_all), 1))),
+                    use_container_width=True, config=PLOT_CONFIG)
+
+    st.subheader("Average daily overlap")
+    st.caption("Videos each pair of countries shares on a typical day.")
+    overlap_avg = run_query(f"""
+        SELECT
+          a.region_code AS region_a,
+          b.region_code AS region_b,
+          ROUND(CAST(COUNT(*) AS DOUBLE) / COUNT(DISTINCT a.ingest_date), 0) AS avg_shared
+        FROM most_popular a
+        JOIN most_popular b
+          ON a.video_id = b.video_id
+         AND a.ingest_date = b.ingest_date
+        WHERE a.region_code IN ({region_list})
+          AND b.region_code IN ({region_list})
+        GROUP BY a.region_code, b.region_code
+    """)
+    matrix_avg = (
+        overlap_avg.pivot(index="region_a", columns="region_b", values="avg_shared")
+        .reindex(index=order, columns=order)
+        .fillna(0)
+        .astype(int)
+    )
+    fig = px.imshow(
+        matrix_avg,
+        text_auto=True,
+        color_continuous_scale="Blues",
+        aspect="auto",
+        labels={"x": "", "y": "", "color": "Shared"},
+    )
+    fig.update_layout(coloraxis_showscale=False)
+    fig.update_traces(hovertemplate="%{y} and %{x}<br>%{z} shared per day<extra></extra>")
+    st.plotly_chart(style(fig, 360), use_container_width=True, config=PLOT_CONFIG)
+
+    st.divider()
 
     if len(dates) < 2:
-        st.info("Only one day so far. This view fills in as days accumulate.")
+        st.info(
+            "Staying power, persistent channels and daily churn need at least "
+            "two days of data."
+        )
     else:
-        history = run_query("""
-            SELECT
-              ingest_date,
-              COUNT(*)                 AS row_count,
-              COUNT(DISTINCT video_id) AS unique_videos,
-              SUM(view_count)          AS total_views
-            FROM most_popular
-            GROUP BY ingest_date
-            ORDER BY ingest_date
+        st.subheader("How long videos stay")
+        st.caption("Number of days each video appeared in any selected chart.")
+        staying = run_query(f"""
+            WITH per_video AS (
+              SELECT video_id, COUNT(DISTINCT ingest_date) AS days
+              FROM most_popular
+              WHERE {all_days}
+              GROUP BY video_id
+            )
+            SELECT days, COUNT(*) AS videos
+            FROM per_video
+            GROUP BY days
+            ORDER BY days
         """)
-
-        fig = px.line(
-            history,
-            x="ingest_date",
-            y="unique_videos",
-            markers=True,
-            labels={"unique_videos": "Unique videos", "ingest_date": ""},
+        staying["label"] = staying["days"].map(
+            lambda d: f"{d} day" if d == 1 else f"{d} days"
         )
-        fig.update_traces(line_color=PALETTE[0], line_width=2.5, marker_size=8)
-        fig.update_xaxes(type="category")
-        st.plotly_chart(style(fig, 320), use_container_width=True, config=PLOT_CONFIG)
-
-        fig = px.line(
-            history,
-            x="ingest_date",
-            y="total_views",
-            markers=True,
-            labels={"total_views": "Total views", "ingest_date": ""},
+        fig = px.bar(
+            staying,
+            x="label",
+            y="videos",
+            text="videos",
+            labels={"videos": "Videos", "label": ""},
         )
-        fig.update_traces(line_color=PALETTE[1], line_width=2.5, marker_size=8)
-        fig.update_xaxes(type="category")
-        st.plotly_chart(style(fig, 320), use_container_width=True, config=PLOT_CONFIG)
+        fig.update_traces(
+            marker_color=PALETTE[2],
+            textposition="outside",
+            cliponaxis=False,
+            hovertemplate="%{x} on the chart<br>%{y} videos<extra></extra>",
+        )
+        st.plotly_chart(style(fig, 340), use_container_width=True, config=PLOT_CONFIG)
 
+        one_day = staying.loc[staying["days"] == 1, "videos"]
+        total_videos = staying["videos"].sum()
+        if not one_day.empty and total_videos:
+            pct = 100.0 * one_day.iloc[0] / total_videos
+            st.caption(f"{pct:.0f}% of videos appeared on one day only.")
+
+        st.subheader("Most persistent channels")
+        st.caption("Ranked by how many separate days they held a chart position.")
+        persistent = run_query(f"""
+            SELECT
+              channel_title,
+              COUNT(DISTINCT ingest_date) AS days,
+              COUNT(DISTINCT video_id)    AS videos,
+              COUNT(*)                    AS appearances
+            FROM most_popular
+            WHERE {all_days}
+            GROUP BY channel_title
+            ORDER BY days DESC, appearances DESC
+            LIMIT 15
+        """)
         st.dataframe(
-            history,
+            persistent,
             use_container_width=True,
+            height=400,
             hide_index=True,
             column_config={
-                "ingest_date": st.column_config.TextColumn("Date", width="small"),
-                "row_count": st.column_config.NumberColumn("Rows", width="small"),
-                "unique_videos": st.column_config.NumberColumn("Videos", width="small"),
-                "total_views": st.column_config.NumberColumn("Views"),
+                "channel_title": st.column_config.TextColumn("Channel", width="large"),
+                "days": st.column_config.NumberColumn("Days", width="small"),
+                "videos": st.column_config.NumberColumn("Videos", width="small"),
+                "appearances": st.column_config.NumberColumn("Spots", width="small"),
             },
         )
-        st.caption("This is the only view that reads every partition.")
+
+        st.subheader("Daily churn")
+        st.caption("Share of each day's videos that were not there the day before.")
+        churn = run_query(f"""
+            WITH daily AS (
+              SELECT DISTINCT ingest_date, video_id
+              FROM most_popular
+              WHERE {all_days}
+            ),
+            compared AS (
+              SELECT
+                t.ingest_date,
+                COUNT(*)                                        AS videos,
+                SUM(CASE WHEN y.video_id IS NULL THEN 1 ELSE 0 END) AS new_videos
+              FROM daily t
+              LEFT JOIN daily y
+                ON y.video_id = t.video_id
+               AND y.ingest_date = CAST(DATE_ADD('day', -1, DATE(t.ingest_date)) AS VARCHAR)
+              GROUP BY t.ingest_date
+            )
+            SELECT
+              ingest_date,
+              videos,
+              new_videos,
+              ROUND(100.0 * new_videos / videos, 1) AS new_pct
+            FROM compared
+            ORDER BY ingest_date
+        """)
+        churn = churn.iloc[1:]
+
+        if churn.empty:
+            st.info("Churn needs two consecutive days.")
+        else:
+            fig = px.bar(
+                churn,
+                x="ingest_date",
+                y="new_pct",
+                text="new_pct",
+                custom_data=["new_videos", "videos"],
+                labels={"new_pct": "% new that day", "ingest_date": ""},
+            )
+            fig.update_traces(
+                marker_color=PALETTE[3],
+                textposition="outside",
+                cliponaxis=False,
+                hovertemplate="%{x}<br>%{y}% new<br>"
+                              "%{customdata[0]} of %{customdata[1]} videos<extra></extra>",
+            )
+            fig.update_xaxes(type="category")
+            fig.update_yaxes(range=[0, 100])
+            st.plotly_chart(style(fig, 340), use_container_width=True,
+                            config=PLOT_CONFIG)
+
+            st.caption(
+                f"Average turnover: {churn['new_pct'].mean():.0f}% of the chart "
+                "is new each day."
+            )
 
 st.divider()
 st.caption(
