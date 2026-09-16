@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: yt-gcc-warehouse
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: yt_gcc_dw
+      POSTGRES_USER: yazeed
+      POSTGRES_PASSWORD: localdev
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
