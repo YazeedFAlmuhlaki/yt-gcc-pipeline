@@ -1,6 +1,3 @@
-
-
-
 -- Raw daily video metrics ingested from the source system before any transformations.
 CREATE TABLE IF NOT EXISTS staging.stg_video_daily (
     video_id         text,
