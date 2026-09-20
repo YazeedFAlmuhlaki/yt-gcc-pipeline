@@ -1,16 +1,30 @@
 services:
-  postgres:
+  warehouse:
     image: postgres:16
-    container_name: yt-gcc-warehouse
-    restart: unless-stopped
+    container_name: yt_warehouse
     environment:
-      POSTGRES_DB: yt_gcc_dw
+      POSTGRES_DB: warehouse
       POSTGRES_USER: yazeed
-      POSTGRES_PASSWORD: localdev
+      POSTGRES_PASSWORD: ${WAREHOUSE_PASSWORD}
     ports:
       - "5433:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - warehouse_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  test:
+    image: postgres:16
+    container_name: yt_test
+    environment:
+      POSTGRES_DB: test
+      POSTGRES_USER: yazeed
+      POSTGRES_PASSWORD: ${TEST_PASSWORD}
+    ports:
+      - "5434:5432"
+    volumes:
+      - test_data:/var/lib/postgresql/data
+    restart: unless-stopped
 
 volumes:
-  pgdata:
+  warehouse_data:
+  test_data:
