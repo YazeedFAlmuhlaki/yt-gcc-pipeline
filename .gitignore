@@ -21,3 +21,4 @@ dashboard/.streamlit/secrets.toml
 
 warehouse/.env
 warehouse/data/
+warehouse/testing
