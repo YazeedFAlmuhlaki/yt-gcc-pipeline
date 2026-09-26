@@ -45,10 +45,10 @@ WHERE is_current;
 
 
 CREATE TABLE IF NOT EXISTS warehouse.dim_video(
-    video_key integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY, 
-    video_id  text NOT NULL, 
-    video_title text NOT NULL, 
-    published_at timestamptz NOT NULL, 
+    video_key       integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY, 
+    video_id        text NOT NULL, 
+    video_title     text NOT NULL, 
+    published_at    timestamptz NOT NULL, 
     valid_from      date NOT NULL,
     valid_to        date,
     is_current      boolean NOT NULL

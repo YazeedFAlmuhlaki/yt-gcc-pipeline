@@ -21,4 +21,11 @@ dashboard/.streamlit/secrets.toml
 
 warehouse/.env
 warehouse/data/
-warehouse/testing
+warehouse/testingwarehouse/airflow/logs/
+warehouse/airflow/config/
+warehouse/airflow/plugins/
+warehouse/airflow/.env
+warehouse/airflow/logs/
+warehouse/airflow/config/
+warehouse/airflow/plugins/
+warehouse/airflow/.env
