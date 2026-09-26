@@ -11,7 +11,11 @@ services:
     volumes:
       - warehouse_data:/var/lib/postgresql/data
       - ./data:/data
+    networks:
+      - default
+      - yt_shared
     restart: unless-stopped
+
 
   test:
     image: postgres:16
@@ -29,3 +33,7 @@ services:
 volumes:
   warehouse_data:
   test_data:
+
+networks:
+  yt_shared:
+    external: true
