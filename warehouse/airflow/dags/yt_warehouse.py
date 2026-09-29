@@ -59,8 +59,7 @@ def yt_warehouse():
         hook = PostgresHook(postgres_conn_id=PG_CONN)
 
         hook.run(
-            "DELETE FROM staging.raw_landing",
-            parameters=(ds,),
+            "DELETE FROM staging.raw_landing"
         )
 
         hook.run(
