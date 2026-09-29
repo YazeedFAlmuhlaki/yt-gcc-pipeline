@@ -1,8 +1,7 @@
 -- Loads one day from the raw landing table into the staging table.
 -- Delete before insert makes the file safe to re-run for the same day.
 
-DELETE FROM staging.stg_video_daily
-WHERE ingest_date = '{{ ds }}';
+DELETE FROM staging.stg_video_daily;
 
 
 INSERT INTO staging.stg_video_daily (

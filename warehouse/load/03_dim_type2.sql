@@ -8,7 +8,7 @@ BEGIN;
 -- dim_channel
 
 UPDATE warehouse.dim_channel AS ct
-SET valid_to   = '{{ ds }}',
+SET valid_to   = '{{ ds }}'::date,
     is_current = false
 FROM (
     SELECT DISTINCT channel_id, channel_title
@@ -22,8 +22,8 @@ INSERT INTO warehouse.dim_channel (channel_id, channel_title, valid_from, valid_
 SELECT DISTINCT
     s.channel_id,
     s.channel_title,
-    '{{ ds }}',
-    NULL,
+    '{{ ds }}'::date,
+    NULL::date,
     true
 FROM staging.stg_video_daily AS s
 WHERE NOT EXISTS (
@@ -37,7 +37,7 @@ WHERE NOT EXISTS (
 -- dim_video
 
 UPDATE warehouse.dim_video AS vt
-SET valid_to   = '{{ ds }}',
+SET valid_to   = '{{ ds }}'::date,
     is_current = false
 FROM (
     SELECT DISTINCT video_id, video_title, published_at
@@ -55,8 +55,8 @@ SELECT DISTINCT
     s.video_id,
     s.video_title,
     s.published_at::timestamptz,
-    '{{ ds }}',
-    NULL,
+    '{{ ds }}'::date,
+    NULL::date,
     true
 FROM staging.stg_video_daily AS s
 WHERE NOT EXISTS (
