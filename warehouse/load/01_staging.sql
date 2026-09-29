@@ -40,4 +40,4 @@ SELECT
     ingest_date,
     source_file
 FROM staging.raw_landing
-WHERE ingest_date = '{{ ds }}';
+WHERE ingest_date = '{{ ds }}'::date;
