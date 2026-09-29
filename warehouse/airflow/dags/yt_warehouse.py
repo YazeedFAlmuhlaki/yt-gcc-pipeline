@@ -16,8 +16,8 @@ PG_CONN = "warehouse_db"
 @dag(
     dag_id="yt_warehouse",
     schedule="@daily",
-    start_date=pendulum.datetime(2026, 9, 20, tz="UTC"),
-    catchup=False,
+    start_date=pendulum.datetime(2026, 9, 2, tz="UTC"),
+    catchup=True,
     max_active_runs=1,
     template_searchpath="/opt/airflow/sql",
 )
