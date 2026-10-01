@@ -1,8 +1,10 @@
 # yt-gcc-pipeline
 
-A serverless pipeline that collects the most popular YouTube videos in six GCC countries every day, adds category names, and publishes the result to a dashboard.
+A serverless pipeline that collects the most popular YouTube videos in six GCC countries every day, adds category names, and publishes the result to a dashboard. On top of it sits a dimensional warehouse that models the same data in PostgreSQL and keeps the history the flat files throw away.
 
 Live dashboard: https://yt-gcc-pipeline.streamlit.app
+
+Warehouse documentation: [warehouse/README.md](warehouse/README.md)
 
 ## What it does
 
@@ -10,9 +12,21 @@ At 21:00 Asia/Riyadh the pipeline calls the YouTube Data API for AE, BH, KW, OM,
 
 A normal day is around 830 chart rows and about 510 distinct videos. The gap exists because a lot of videos trend in more than one country.
 
+The second part reads those same daily files into a star schema in PostgreSQL, orchestrated by Airflow, so that questions about how things changed over time can be answered rather than only how they look today.
+
 ## Architecture
 
 ![Architecture](docs/youtube-gcc-architecture.svg)
+
+## The warehouse
+
+The dashboard reads the processed files directly, which means it only ever knows the title a video had at collection time. When a publisher renames a video, every past appearance is restated under the new name. Over 27 days that happened to 65 videos and 3 channels.
+
+So the files are also loaded into a star schema in PostgreSQL. One fact row is one video, in one region, on one ingest date. The video and channel dimensions are versioned with SCD Type 2, so each appearance stays attached to the title that was live on its own day. Tags sit in a bridge table, since a video has many tags and a tag belongs to many videos.
+
+The load runs as a daily Airflow DAG of nine tasks: confirm the day's key exists in S3, download it, land the lines untouched, parse them into columns, fill the dimensions, build the bridge, load the fact table, then run two checks that fail the run if rows went missing or an entity ended up with two current versions.
+
+Design decisions, constraints and known limits are in [warehouse/README.md](warehouse/README.md).
 
 ## How the merge knows the batch is complete
 
@@ -64,6 +78,15 @@ yt-gcc-pipeline/
 ├── dashboard/
 │   ├── app.py
 │   └── requirements.txt
+├── warehouse/
+│   ├── README.md               design, constraints, limits
+│   ├── docker-compose.yml      PostgreSQL
+│   ├── ddl/                    schema, tables, static seeds, run once
+│   ├── load/                   daily transforms, parameterised by date
+│   ├── docs/                   star schema and design notes
+│   └── airflow/
+│       ├── docker-compose.yaml
+│       └── dags/yt_warehouse.py
 ├── docs/
 │   └── architecture.png
 └── pyproject.toml
@@ -194,6 +217,8 @@ athena_database = "yt_gcc"
 athena_output = "s3://.../"
 ```
 
+Running the warehouse locally is covered in [warehouse/README.md](warehouse/README.md).
+
 ## Configuration
 
 Environment variables on `yt-gcc-ingest` and `yt-gcc-categories`:
@@ -208,6 +233,8 @@ Environment variables on `yt-gcc-ingest` and `yt-gcc-categories`:
 The S3 trigger relies on a resource-based policy on the merge function, which is separate from its execution role. The execution role controls what the function can reach. The resource policy controls who is allowed to invoke it, and it is scoped by `SourceArn` and `SourceAccount`.
 
 The dashboard uses a separate IAM user with Athena query execution, Glue catalog reads, S3 reads on the data bucket, and read/write on the Athena results bucket. It also needs `s3:GetBucketLocation` on both buckets, because Athena checks the bucket region before writing results. That one is easy to miss and the error message does not say so.
+
+The warehouse reads S3 with a third IAM user, in a different account from the bucket, which needs permission on both sides: a policy on the user and a bucket policy on the owning account.
 
 **Sizing.** The merge holds six regional files in memory at once, so 128 MB is not enough. 512 MB is comfortable, and because Lambda scales CPU with memory it also runs faster.
 
@@ -224,6 +251,8 @@ The categories function makes six sequential API calls and needs more than the d
 **NDJSON.** One object per line reads like a table, streams without loading the whole file, and works with Athena's `JsonSerDe` out of the box.
 
 **21:00 local.** The chart builds up through the day, so an evening pull is more settled than a morning one. It also keeps the UTC `ingest_date` on the same calendar day as Riyadh. A run between midnight and 03:00 local would be stamped with the previous UTC date.
+
+**The warehouse runs locally.** Orchestration stays on a laptop rather than a server. The data itself is safe in S3 and the whole warehouse rebuilds from it, so paying for an always-on instance to run a job that takes minutes was not worth it.
 
 ## Operational notes
 
