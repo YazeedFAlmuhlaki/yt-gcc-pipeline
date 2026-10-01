@@ -6,12 +6,14 @@ The upstream pipeline writes one processed NDJSON file per day to S3. This part 
 
 ![Star schema](docs/star_schema.png)
 
+The diagram shows tables and relationships. The constraints that carry the design decisions are described under [Constraints](#constraints), since they do not appear in it.
+
 ## Source data
 
 One file per day, partitioned by date in the key:
 
 ```
-s3://<bucket>/processed/youtube/most_popular/ingest_date=YYYY-MM-DD/most_popular.ndjson
+s3://yt-gcc-183749090090/processed/youtube/most_popular/ingest_date=YYYY-MM-DD/most_popular.ndjson
 ```
 
 Each line is one JSON object representing one video appearing in one country's most-popular list on one day. A typical day holds around 900 rows covering roughly 500 distinct videos, the gap being videos that chart in more than one country.
@@ -30,7 +32,7 @@ Three details of the source shape the design. The three counters are cumulative 
 
 **Every dimension has a generated integer surrogate key**, including the ones without history. This keeps the fact table structure independent of dimension policy, so converting a dimension to versioned later touches only that dimension instead of altering a column in the largest table. Source identifiers stay in the dimensions as ordinary text columns and are never converted to numbers, since they are identifiers rather than quantities.
 
-**The fact table also keeps the natural key** (`video_id`, `region_code`, `ingest_date`) and carries the unique constraint on those three columns rather than on the surrogate keys. Surrogate keys of a versioned dimension move: if a day is reloaded after a title change, the lookup returns a different `video_key`, a constraint built on surrogate keys sees a new combination and admits a duplicate row. Source identifiers do not move, so the constraint holds.
+**The fact table also keeps the natural key** (`video_id`, `region_code`, `ingest_date`), which carries the uniqueness constraint. The reasoning is under [Constraints](#constraints).
 
 **Tags use a bridge table**, since a video has many tags and a tag belongs to many videos. The cost is that joining the fact table through the bridge multiplies rows by tag count, so aggregating the counters across tags double counts unless the query handles it.
 
@@ -44,6 +46,18 @@ Three details of the source shape the design. The three counters are cumulative 
 | `regional_rank` | non-additive | none |
 
 The counters are cumulative and global, so summing across days double counts and summing across regions counts the same value once per region. Last value in a period, or the difference between two days, are the correct operations. Rank is a position, so ordering, filtering and counting are the only things that mean anything.
+
+## Constraints
+
+Four constraints carry design decisions rather than hygiene, and none of them is visible in the diagram.
+
+**One current row per entity.** A partial unique index on `dim_channel` and `dim_video`, covering the natural key and restricted to rows where `is_current` is true. The natural key itself cannot be unique in a versioned dimension, since an entity occupies several rows over time, but exactly one of them may be open at any moment. Without this, a close step that silently fails leaves two open versions, and every later lookup returns two rows instead of one.
+
+**No duplicate fact rows.** A unique constraint on `video_id`, `region_code` and `ingest_date`. It is built on source identifiers rather than surrogate keys because surrogate keys of a versioned dimension move. After a title change, reloading the same day resolves to a different `video_key`, so a constraint built on surrogate keys would see a new combination and admit the row a second time. Source identifiers do not move.
+
+**One row per video and tag pair.** A composite primary key on both columns of the bridge table, with no surrogate key of its own, since the row represents a link rather than an entity.
+
+**No orphan fact rows.** Foreign keys from the fact table to all five dimensions, declared `NOT NULL` with `ON DELETE RESTRICT`. The null constraint makes an unresolved lookup fail loudly instead of inserting a dangling row. The restrict clause stops a dimension row from being deleted while measurements still point at it.
 
 ## The load
 
@@ -75,9 +89,7 @@ Three cases per incoming row. A new entity is inserted as current. An unchanged 
 
 Both the closing date and the opening date are the ingest date, so the periods meet exactly with no gap and no overlap. A gap means a lookup finds no version and the fact row is dropped. An overlap means it finds two and the row is duplicated. The date comes from the file rather than from the current date, so backfilling a past day records the change on the day it actually happened.
 
-The close and the open run inside one transaction. Without that, a failure between them leaves an entity with no current row at all.
-
-A partial unique index enforces one current row per natural key, which catches a broken close before it corrupts anything.
+The close and the open run inside one transaction. Without that, a failure between them leaves an entity with no current row at all, and the next fact load has nothing to point at.
 
 ### Quality checks
 
@@ -85,7 +97,7 @@ Two gates, both of which raise an exception so the task fails visibly rather tha
 
 The first compares the staging row count with the fact row count for the day. The join that resolves identifiers to surrogate keys drops rows silently when it finds no match, so without this check a missing dimension row would quietly shrink the day's data.
 
-The second looks for any entity with more than one current row in the versioned dimensions, which would mean the close step is broken.
+The second looks for any entity with more than one current row in the versioned dimensions, which would mean the close step is broken. The partial unique index should prevent that state, so this check exists to catch the index itself going missing.
 
 ## Running it locally
 
@@ -100,11 +112,11 @@ cd airflow    && docker compose up airflow-init && docker compose up -d
 Create the schema and seed the static dimensions:
 
 ```
-docker compose exec -T warehouse psql -U <user> -d warehouse < ddl/01_schemas.sql
-docker compose exec -T warehouse psql -U <user> -d warehouse < ddl/02_staging.sql
-docker compose exec -T warehouse psql -U <user> -d warehouse < ddl/03_dimensions.sql
-docker compose exec -T warehouse psql -U <user> -d warehouse < ddl/04_seed_static.sql
-docker compose exec -T warehouse psql -U <user> -d warehouse < ddl/05_raw_landing.sql
+docker compose exec -T warehouse psql -U yazeed -d warehouse < ddl/01_schemas.sql
+docker compose exec -T warehouse psql -U yazeed -d warehouse < ddl/02_staging.sql
+docker compose exec -T warehouse psql -U yazeed -d warehouse < ddl/03_dimensions.sql
+docker compose exec -T warehouse psql -U yazeed -d warehouse < ddl/04_seed_static.sql
+docker compose exec -T warehouse psql -U yazeed -d warehouse < ddl/05_raw_landing.sql
 ```
 
 Every DDL file is safe to run twice.
