@@ -12,6 +12,11 @@ AWS_CONN = "aws_s3_conn"
 DATA_DIR = "/opt/airflow/data"
 PG_CONN = "warehouse_db"
 
+default_args = {
+    "retries": 2,
+    "retry_delay": pendulum.duration(minutes=5),
+}
+
 
 @dag(
     dag_id="yt_warehouse",
@@ -20,6 +25,7 @@ PG_CONN = "warehouse_db"
     catchup=True,
     max_active_runs=1,
     template_searchpath="/opt/airflow/sql",
+    default_args=default_args
 )
 def yt_warehouse():
     # Wait until the daily processed file is available before starting the load.
